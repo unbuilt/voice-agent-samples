@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/microsoft/AgentSchema/refs/heads/main/schemas/v1.0/ContainerAgent.yaml
+
+kind: hosted
+name: github-copilot-python-responses-voicelive
+description: |
+    Hosted agent that uses GitHub Copilot as the AI backend via the Copilot SDK, served through the Responses protocol. Streams real-time status updates (tool execution, reasoning progress) while Copilot is working.
+metadata:
+    tags:
+        - AI Agent Hosting
+        - Responses Protocol
+        - Bring Your Own
+        - GitHub Copilot
+        - Python
+    voiceLiveCompatible: "true"
+protocols:
+    - protocol: responses
+      version: 1.0.0
+resources:
+    cpu: "1"
+    memory: 2Gi
+environment_variables:
+    - name: GITHUB_TOKEN
+      value: ${GITHUB_TOKEN}
