@@ -99,9 +99,10 @@ if not _github_token:
 # Voice instruction prepended to each user message so Copilot knows
 # to keep responses short and TTS-friendly.
 _VOICE_INSTRUCTION = (
-    "You are working in a Voice output mode. "
-    "Please feedback the user input with a short (under 5 words) message first. then continue messages if needed. "
-    "Keep the messages concise and informative, suitable for text-to-speech readout. Don't ask many questions in a message. "
+    "[Voice mode] Respond in short, natural sentences as if speaking aloud. "
+    "No bullet points, numbered lists, markdown, code blocks, or special formatting. "
+    "Keep it conversational and concise — a few sentences at most, no more than one question. "
+    "Start with a brief acknowledgment (under 5 words), then continue if needed."
     "\n"
     "User input: "
 )
@@ -387,11 +388,17 @@ app = ResponsesAgentServerHost(
 # Filler phrases sent immediately to reduce perceived latency.
 # TTS will start speaking one of these while Copilot is still thinking.
 _FILLER_PHRASES = [
-    "Hmm.",
+    "Hold on a sec.",
     "Let me see.",
     "One moment.",
     "Just a sec.",
-    "Alright.",
+    "Give me a sec.",
+    "Let me take a look.",
+    "Hang on.",
+    "Hold up.",
+    "Be right back.",
+    "One sec.",
+    "Hang tight.",
 ]
 
 
@@ -431,15 +438,17 @@ async def handle_response(
     yield stream.emit_in_progress()
 
     # ── Filler phrase — speak immediately to reduce perceived latency ────
-    filler = random.choice(_FILLER_PHRASES)
-    filler_item = stream.add_output_item_message()
-    yield filler_item.emit_added()
-    fc = filler_item.add_text_content()
-    yield fc.emit_added()
-    yield fc.emit_delta(filler)
-    yield fc.emit_text_done()
-    yield fc.emit_done()
-    yield filler_item.emit_done()
+    ENABLE_FILLER = False
+    if ENABLE_FILLER:
+        filler = random.choice(_FILLER_PHRASES)
+        filler_item = stream.add_output_item_message()
+        yield filler_item.emit_added()
+        fc = filler_item.add_text_content()
+        yield fc.emit_added()
+        yield fc.emit_delta(filler)
+        yield fc.emit_text_done()
+        yield fc.emit_done()
+        yield filler_item.emit_done()
 
     # ── Await the session (warmup may have already completed it) ─────────
     session = await _ensure_session()
