@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/microsoft/AgentSchema/refs/heads/main/schemas/v1.0/ContainerAgent.yaml
+
+kind: hosted
+name: handoff-maf-responses-voicelive
+description: |
+    Multi-agent customer support handoff demo using Microsoft Agent Framework's HandoffBuilder, served through the Responses protocol for voice-first scenarios.
+metadata:
+    tags:
+        - AI Agent Hosting
+        - Responses Protocol
+        - Bring Your Own
+        - Microsoft Agent Framework
+        - Handoff
+        - Python
+    voiceLiveCompatible: "true"
+protocols:
+    - protocol: responses
+      version: 1.0.0
+resources:
+    cpu: "1"
+    memory: 2Gi
+environment_variables:
+    - name: OPENAI_API_KEY
+      value: ${OPENAI_API_KEY}
+    - name: OPENAI_BASE_URL
+      value: ${OPENAI_BASE_URL}
+    - name: MODEL
+      value: ${MODEL}
