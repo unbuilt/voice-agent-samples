@@ -12,16 +12,16 @@ Three specialized agents with handoff:
 
 Agents transfer control via handoff tools. Status updates stream in real-time as agents hand off and tools execute.
 
-## Environment Variables
+## Local Development
+
+#### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `FOUNDRY_PROJECT_ENDPOINT` | Yes | Foundry project endpoint (auto-injected in hosted containers) |
-| `OPENAI_API_KEY` | Yes | API key for the LLM provider |
-| `OPENAI_BASE_URL` | No | Base URL for the LLM (default: `https://api.openai.com/v1`) |
-| `MODEL` | No | Model name (default: `gpt-4o`) |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Yes | Model deployment name in the Foundry project |
 
-## Local Development
+#### Run Locally
 
 ```bash
 cp .env.example .env
@@ -30,7 +30,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Test
+#### Test
 
 ```bash
 # Streaming
@@ -39,8 +39,52 @@ curl -sS -N -X POST http://localhost:8088/responses \
     -d '{"input": "I need a refund for order 12345", "stream": true}'
 ```
 
-## Deploy
+## Using [`azd`](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?view=foundry&pivots=azd) (recommended for CLI workflows)
+
+No cloning required. Create a new folder, point azd at the manifest on GitHub, and it sets up the sample and generates Bicep infrastructure, agent.yaml, and env config automatically:
 
 ```bash
+# Create a new folder for the agent and navigate into it
+mkdir handoff-langgraph-agent && cd handoff-langgraph-agent
+
+# Initialize from the manifest — azd reads it, downloads the sample,
+# and generates Bicep infrastructure, agent.yaml, and env config
+azd ai agent init -m path/to/agent.manifest.yaml
+
+# Provision Azure resources (Foundry project, model deployment, App Insights)
+azd provision
+
+# Run the agent locally (handles env vars, dependency install, and startup)
 azd ai agent run
 ```
+
+The agent starts on http://localhost:8088/. To invoke it:
+
+```bash
+azd ai agent invoke --local "I need a refund for order 12345"
+```
+### Deploying the Agent to Microsoft Foundry
+
+Once you've tested locally, deploy to Microsoft Foundry:
+
+```bash
+# Provision Azure resources (skip if already done during local setup)
+azd provision
+
+# Build, push, and deploy the agent to Foundry
+azd deploy
+```
+
+After deploying, invoke the agent running in Foundry:
+
+```bash
+azd ai agent invoke "I need a refund for order 12345"
+```
+
+To stream logs from the running agent:
+
+```bash
+azd ai agent monitor
+```
+
+For the full deployment guide, see [Azure AI Foundry hosted agents](https://aka.ms/azdaiagent/docs).

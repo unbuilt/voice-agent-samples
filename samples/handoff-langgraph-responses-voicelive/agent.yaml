@@ -12,17 +12,12 @@ metadata:
         - LangGraph
         - Handoff
         - Python
-    voiceLiveCompatible: "true"
 protocols:
     - protocol: responses
       version: 1.0.0
 resources:
-    cpu: "1"
-    memory: 2Gi
+    cpu: "0.5"
+    memory: 1Gi
 environment_variables:
-    - name: OPENAI_API_KEY
-      value: ${OPENAI_API_KEY}
-    - name: OPENAI_BASE_URL
-      value: ${OPENAI_BASE_URL}
-    - name: MODEL
-      value: ${MODEL}
+    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+      value: gpt-4.1

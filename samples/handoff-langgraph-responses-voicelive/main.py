@@ -10,18 +10,17 @@ This sample demonstrates:
   - Using the Responses protocol with ``ResponseEventStream``
   - Streaming status updates as agents hand off and tools execute
   - Voice-optimized responses (short, conversational)
+  - Structural robustness: handoff reasons, session context injection, bounce-back guards
 
 Required environment variables:
     FOUNDRY_PROJECT_ENDPOINT: Foundry project endpoint (auto-injected in hosted containers)
-    OPENAI_API_KEY: API key for the LLM provider
-    OPENAI_BASE_URL: Base URL for the LLM provider (default: OpenAI)
-    MODEL: Model name (default: gpt-4o)
+    AZURE_AI_MODEL_DEPLOYMENT_NAME: Model deployment name in the Foundry project
 
 Usage::
 
     # Set environment variables
     export FOUNDRY_PROJECT_ENDPOINT="https://<account>.services.ai.azure.com/api/projects/<project>"
-    export OPENAI_API_KEY="sk-..."
+    export AZURE_AI_MODEL_DEPLOYMENT_NAME="gpt-4.1"
 
     # Start the agent
     python main.py
@@ -40,7 +39,6 @@ import logging
 import os
 import random
 import sys
-import uuid
 from collections.abc import AsyncIterable
 from typing import Any
 
@@ -51,11 +49,12 @@ from azure.ai.agentserver.responses import (
     ResponsesAgentServerHost,
     ResponsesServerOptions,
 )
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 import httpx
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool as langchain_tool
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 
 load_dotenv()
 
@@ -84,24 +83,15 @@ if not _endpoint:
 # ---------------------------------------------------------------------------
 # LLM
 # ---------------------------------------------------------------------------
-_proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or os.environ.get("ALL_PROXY") or os.environ.get("all_proxy")
-_http_client = httpx.Client(proxy=_proxy_url) if _proxy_url else None
-_http_async_client = httpx.AsyncClient(proxy=_proxy_url) if _proxy_url else None
+_credential = DefaultAzureCredential()
+_token_provider = get_bearer_token_provider(_credential, "https://ai.azure.com/.default")
 
 llm = ChatOpenAI(
-    base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    model=os.getenv("MODEL", "gpt-4o"),
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    http_client=_http_client,
-    http_async_client=_http_async_client,
-)
-
-# Voice instruction prepended so the LLM keeps responses short and TTS-friendly.
-_VOICE_INSTRUCTION = (
-    "[Voice mode] Respond in short, natural sentences as if speaking aloud. "
-    "No bullet points, numbered lists, markdown, code blocks, or special formatting. "
-    "Keep it conversational and concise — a few sentences at most, no more than one question. "
-    "Start with a brief acknowledgment (under 5 words), then continue if needed.\n\n"
+    base_url=_endpoint.rstrip("/") + "/openai/v1",
+    api_key=_token_provider,
+    model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+    use_responses_api=True,
+    streaming=True,
 )
 
 # ---------------------------------------------------------------------------
@@ -154,17 +144,17 @@ AGENTS: dict[str, dict[str, Any]] = {
         "system": (
             "You are the customer support triage agent.\n"
             "Routing policy:\n"
-            "1. Route refund-related requests to refund_agent using the handoff_to_refund_agent tool.\n"
-            "2. Route replacement/shipping requests to order_agent using the handoff_to_order_agent tool.\n"
+            "1. Route refund-related requests to refund_agent.\n"
+            "2. Route replacement/shipping requests to order_agent.\n"
             "3. If user wants both refund and replacement, route to refund_agent first.\n"
             "4. Do not force replacement if the user asked for refund only.\n"
             "5. When the issue is fully resolved, send a warm farewell and end with exactly: Case complete.\n"
             "\n"
-            "CRITICAL RULES:\n"
+            "RULES:\n"
             "- You MUST use a handoff tool to transfer. NEVER just describe a transfer in text.\n"
-            "- If the user asks for something outside your scope (new orders, general questions),\n"
-            "  politely explain you can only help with refunds and replacements, then ask if there's\n"
-            "  anything else. If not, say farewell and end with: Case complete."
+            "- If the user asks for something outside your scope, politely explain you can only help\n"
+            "  with refunds and replacements, then ask if there's anything else.\n"
+            "  If not, say farewell and end with: Case complete."
         ),
         "tools": [],
         "handoffs": ["refund_agent", "order_agent"],
@@ -172,42 +162,39 @@ AGENTS: dict[str, dict[str, Any]] = {
     "refund_agent": {
         "system": (
             "You are the refund specialist.\n"
-            "Workflow policy:\n"
+            "Workflow:\n"
             "1. If order_id is missing, ask only for order_id.\n"
             "2. Once order_id is available, call lookup_order_details(order_id).\n"
             "3. Do not ask the customer how much they paid.\n"
             "4. If user intent is ambiguous, ask: refund only, replacement only, or both.\n"
-            "5. If the user wants a refund, call submit_refund with order_id, amount, and description.\n"
+            "5. Call submit_refund with order_id, amount, and description.\n"
             "6. After successful refund:\n"
-            "   - If user also wants replacement, call handoff_to_order_agent immediately.\n"
-            "   - If refund only, call handoff_to_triage_agent immediately for farewell.\n"
-            "7. If replacement only, call handoff_to_order_agent directly.\n"
-            "8. Never say 'Case complete.' yourself.\n"
+            "   - If user also wants replacement: hand off to order_agent with reason explaining the refund is done.\n"
+            "   - If refund only: confirm the refund briefly and say farewell. End with: Case complete.\n"
+            "7. If replacement only (no refund needed): hand off to order_agent.\n"
             "\n"
-            "CRITICAL RULES:\n"
-            "- You MUST use a handoff tool to transfer. NEVER just describe a transfer in text.\n"
-            "- After submit_refund succeeds, you MUST call a handoff tool in the same turn.\n"
-            "  Do NOT ask 'anything else?' — just handoff.\n"
-            "- If a user asks for something unrelated to refunds, call handoff_to_triage_agent."
+            "RULES:\n"
+            "- Use handoff tools to transfer. Include a clear reason.\n"
+            "- After refund-only success, do NOT hand off. Say farewell yourself.\n"
+            "- If unrelated to refunds, hand off to triage_agent."
         ),
         "tools": [lookup_order_details, submit_refund],
         "handoffs": ["order_agent", "triage_agent"],
     },
     "order_agent": {
         "system": (
-            "You are the order specialist.\n"
-            "Only handle replacement/exchange/shipping tasks.\n"
+            "You are the order specialist. Handle replacement/exchange/shipping.\n"
+            "Workflow:\n"
             "1. If shipping preference is missing, ask: standard or expedited.\n"
-            "2. If order_id is missing, ask for it.\n"
-            "3. Once ready, call submit_replacement(order_id, shipping_preference, replacement_note).\n"
-            "4. After success, call handoff_to_triage_agent immediately for farewell.\n"
-            "5. Never say 'Case complete.' yourself.\n"
-            "If user wants refund only, call handoff_to_refund_agent.\n"
+            "2. If order_id is missing and not in context, ask for it.\n"
+            "3. Call submit_replacement(order_id, shipping_preference, replacement_note).\n"
+            "4. After success, confirm briefly and say farewell. End with: Case complete.\n"
             "\n"
-            "CRITICAL RULES:\n"
-            "- You MUST use a handoff tool to transfer. NEVER just describe a transfer in text.\n"
-            "- After submit_replacement succeeds, you MUST call handoff_to_triage_agent in the same turn.\n"
-            "- If a user asks for something unrelated to replacements, call handoff_to_triage_agent."
+            "RULES:\n"
+            "- Use handoff tools to transfer. Include a clear reason.\n"
+            "- After submit_replacement succeeds, do NOT hand off. Say farewell yourself.\n"
+            "- Only hand off to refund_agent if user explicitly asks for a refund instead.\n"
+            "- If unrelated to replacements, hand off to triage_agent."
         ),
         "tools": [lookup_order_details, submit_replacement],
         "handoffs": ["triage_agent", "refund_agent"],
@@ -223,7 +210,16 @@ def _build_handoff_tool_schemas(agent_name: str) -> list[dict]:
             "function": {
                 "name": f"handoff_to_{target}",
                 "description": f"Transfer the conversation to {target}.",
-                "parameters": {"type": "object", "properties": {}, "required": []},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Why you are handing off. Include what has been completed and what the next agent should do.",
+                        }
+                    },
+                    "required": ["reason"],
+                },
             },
         }
         for target in AGENTS[agent_name]["handoffs"]
@@ -234,50 +230,138 @@ def _build_handoff_tool_schemas(agent_name: str) -> list[dict]:
 # Simple turn-based orchestrator (per-session state)
 # ---------------------------------------------------------------------------
 
-_session_state: dict[str, dict] = {}
+_session_state: dict[str, Any] = {
+    "messages": [],
+    "active_agent": "triage_agent",
+    "completed_actions": [],  # e.g. ["refund_submitted", "replacement_submitted"]
+}
 
 
-def _get_session(session_id: str) -> dict:
-    if session_id not in _session_state:
-        _session_state[session_id] = {"messages": [], "active_agent": "triage_agent"}
-    return _session_state[session_id]
+def _build_context_block() -> str:
+    """Build a dynamic context block injected into system prompts."""
+    parts = []
+    if _session_state["completed_actions"]:
+        parts.append("Already completed: " + ", ".join(_session_state["completed_actions"]))
+    return ("[Session context]\n" + "\n".join(parts) + "\n\n") if parts else ""
 
 
-async def run_agent_turn(
-    session_id: str, user_text: str
-) -> AsyncIterable[dict[str, Any]]:
+async def run_agent_turn(user_text: str) -> AsyncIterable[dict[str, Any]]:
     """Run one turn, yielding status/content events as they happen.
 
     Yields dicts with:
       - {"type": "status", "text": "..."} for status updates
-      - {"type": "content", "text": "..."} for final response text
+      - {"type": "content", "text": "..."} for final response text (ainvoke mode)
+      - {"type": "content_delta", "text": "..."} for streamed token chunks (astream mode)
+      - {"type": "content_done"} signals end of streamed content (astream mode)
       - {"type": "agent", "name": "..."} when agent changes
-    """
-    session = _get_session(session_id)
-    session["messages"].append(HumanMessage(content=user_text))
 
-    active_agent = session["active_agent"]
-    working_messages = list(session["messages"])
+    Set USE_STREAMING=true env var to enable real token streaming.
+    """
+    _session_state["messages"].append(HumanMessage(content=user_text))
+
+    active_agent = _session_state["active_agent"]
+    working_messages = list(_session_state["messages"])
     max_iterations = 15
+    # Track handoff chain within this turn only (reset each turn)
+    turn_handoff_source: str | None = None
+    use_streaming = os.environ.get("USE_STREAMING", "true").lower() in ("true", "1", "yes")
 
     for _ in range(max_iterations):
         agent_def = AGENTS[active_agent]
-        system_msg = {"role": "system", "content": _VOICE_INSTRUCTION + agent_def["system"]}
+        context_block = _build_context_block()
+        system_msg = {"role": "system", "content": (
+            "[Voice mode] Respond in short, natural sentences as if speaking aloud. "
+            "No bullet points, numbered lists, markdown, code blocks, or special formatting. "
+            "Keep it conversational and concise — a few sentences at most, no more than one question. "
+            "Always respond in the same language the user is speaking.\n\n"
+            + context_block + agent_def["system"]
+        )}
 
         real_tools = agent_def["tools"]
         handoff_schemas = _build_handoff_tool_schemas(active_agent)
         all_tools = real_tools + [s["function"] for s in handoff_schemas]
         llm_with_tools = llm.bind_tools(all_tools)
 
-        response = await llm_with_tools.ainvoke([system_msg] + working_messages)
+        if use_streaming:
+            # ------- astream path: real token-by-token streaming -------
+            collected_content = ""
+            collected_tool_calls: dict[Any, dict] = {}  # index -> {name, args_str, id}
+            content_started = False
 
-        if not response.tool_calls:
-            text = response.content or ""
-            session["active_agent"] = active_agent
-            session["messages"].append(AIMessage(content=text))
-            yield {"type": "content", "text": text}
-            return
+            async for chunk in llm_with_tools.astream([system_msg] + working_messages):
+                # Accumulate text content
+                if chunk.content:
+                    delta = chunk.content if isinstance(chunk.content, str) else ""
+                    if isinstance(chunk.content, list):
+                        delta = "".join(
+                            block.get("text", "") if isinstance(block, dict) else str(block)
+                            for block in chunk.content
+                        )
+                    if delta:
+                        if not content_started:
+                            content_started = True
+                        collected_content += delta
+                        yield {"type": "content_delta", "text": delta}
 
+                # Accumulate tool calls from chunks
+                if chunk.tool_call_chunks:
+                    for tc_chunk in chunk.tool_call_chunks:
+                        idx = tc_chunk.get("index", tc_chunk.get("id", len(collected_tool_calls)))
+                        if idx not in collected_tool_calls:
+                            collected_tool_calls[idx] = {"name": "", "args_str": "", "id": ""}
+                        if tc_chunk.get("name"):
+                            collected_tool_calls[idx]["name"] = tc_chunk["name"]
+                        if tc_chunk.get("args"):
+                            collected_tool_calls[idx]["args_str"] += tc_chunk["args"]
+                        if tc_chunk.get("id"):
+                            collected_tool_calls[idx]["id"] = tc_chunk["id"]
+
+            # Build final tool_calls list
+            final_tool_calls = []
+            for tc_data in collected_tool_calls.values():
+                if tc_data["name"]:
+                    try:
+                        args = json.loads(tc_data["args_str"]) if tc_data["args_str"] else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    final_tool_calls.append({
+                        "name": tc_data["name"],
+                        "args": args,
+                        "id": tc_data["id"],
+                    })
+
+            if not final_tool_calls:
+                # Pure text response — done
+                if content_started:
+                    yield {"type": "content_done"}
+                _session_state["active_agent"] = active_agent
+                _session_state["messages"].append(AIMessage(content=collected_content))
+                return
+
+            # Had tool calls — build an AIMessage to append
+            response = AIMessage(
+                content=collected_content,
+                tool_calls=final_tool_calls,
+            )
+        else:
+            # ------- ainvoke path: wait for complete response -------
+            response = await llm_with_tools.ainvoke([system_msg] + working_messages)
+
+            if not response.tool_calls:
+                raw_content = response.content or ""
+                if isinstance(raw_content, list):
+                    text = "".join(
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in raw_content
+                    )
+                else:
+                    text = raw_content
+                _session_state["active_agent"] = active_agent
+                _session_state["messages"].append(AIMessage(content=text))
+                yield {"type": "content", "text": text}
+                return
+
+        # --- Common tool-call handling for both paths ---
         working_messages.append(response)
 
         for tc in response.tool_calls:
@@ -285,14 +369,34 @@ async def run_agent_turn(
 
             if tool_name.startswith("handoff_to_"):
                 target = tool_name.replace("handoff_to_", "")
-                if target in AGENTS:
+                reason = tc["args"].get("reason", "")
+
+                # Guard: block immediate bounce-back within this turn only
+                if target == turn_handoff_source and target != "triage_agent":
                     working_messages.append(
-                        ToolMessage(content=f"Transferred to {target}.", tool_call_id=tc["id"])
+                        ToolMessage(
+                            content=f"Cannot transfer back to {target} (already handed off from there this turn). "
+                                    f"Handle the request yourself or transfer to a different agent.",
+                            tool_call_id=tc["id"],
+                        )
                     )
+                elif target in AGENTS:
+                    handoff_msg = f"Transferred to {target}."
+                    if reason:
+                        handoff_msg += f" Reason: {reason}"
+                    working_messages.append(
+                        ToolMessage(content=handoff_msg, tool_call_id=tc["id"])
+                    )
+                    # Inject a nudge so the new agent always produces a greeting
+                    working_messages.append(
+                        HumanMessage(content="[connected]")
+                    )
+                    turn_handoff_source = active_agent
                     active_agent = target
-                    session["active_agent"] = active_agent
+                    _session_state["active_agent"] = active_agent
                     yield {"type": "status", "text": f"Transferring to {target.replace('_', ' ')}..."}
                     yield {"type": "agent", "name": active_agent}
+                    await asyncio.sleep(0.5)  # Brief pause before new agent speaks
                 else:
                     working_messages.append(
                         ToolMessage(content=f"Unknown agent: {target}", tool_call_id=tc["id"])
@@ -306,14 +410,19 @@ async def run_agent_turn(
                         result_str = json.dumps(result) if not isinstance(result, str) else result
                     except Exception as e:
                         result_str = f"Error: {e}"
+                    # Track completed actions
+                    if tool_name == "submit_refund":
+                        _session_state["completed_actions"].append("refund_submitted")
+                    elif tool_name == "submit_replacement":
+                        _session_state["completed_actions"].append("replacement_submitted")
                 else:
                     result_str = f"Unknown tool: {tool_name}"
                 working_messages.append(ToolMessage(content=result_str, tool_call_id=tc["id"]))
 
     # Safety fallback
-    session["active_agent"] = active_agent
+    _session_state["active_agent"] = active_agent
     fallback = "I'm having trouble processing your request. Please try again."
-    session["messages"].append(AIMessage(content=fallback))
+    _session_state["messages"].append(AIMessage(content=fallback))
     yield {"type": "content", "text": fallback}
 
 
@@ -349,16 +458,26 @@ async def handle_response(
     yield stream.emit_created()
     yield stream.emit_in_progress()
 
-    # Use session ID from context or generate one
-    session_id = os.environ.get("FOUNDRY_AGENT_SESSION_ID", str(uuid.uuid4()))
-
     try:
-        async for event in run_agent_turn(session_id, user_input):
+        # Track streaming content item (for astream mode)
+        streaming_content_item = None
+        streaming_tc = None
+
+        async for event in run_agent_turn(user_input):
             if cancellation_signal.is_set():
                 yield stream.emit_incomplete(reason="cancelled")
                 return
 
             if event["type"] == "status":
+                # Close any in-flight streaming content before emitting status
+                if streaming_tc:
+                    yield streaming_tc.emit_text_done()
+                    yield streaming_tc.emit_done()
+                if streaming_content_item:
+                    yield streaming_content_item.emit_done()
+                streaming_content_item = None
+                streaming_tc = None
+
                 # Emit status as a separate output item
                 s_item = stream.add_output_item_message()
                 yield s_item.emit_added()
@@ -370,7 +489,7 @@ async def handle_response(
                 yield s_item.emit_done()
 
             elif event["type"] == "content":
-                # Emit the actual response content
+                # ainvoke mode: full content available at once
                 content_item = stream.add_output_item_message()
                 yield content_item.emit_added()
                 tc = content_item.add_text_content()
@@ -385,6 +504,25 @@ async def handle_response(
                 yield tc.emit_text_done()
                 yield tc.emit_done()
                 yield content_item.emit_done()
+
+            elif event["type"] == "content_delta":
+                # astream mode: real token-by-token streaming
+                if streaming_content_item is None:
+                    streaming_content_item = stream.add_output_item_message()
+                    yield streaming_content_item.emit_added()
+                    streaming_tc = streaming_content_item.add_text_content()
+                    yield streaming_tc.emit_added()
+                yield streaming_tc.emit_delta(event["text"])
+
+            elif event["type"] == "content_done":
+                # astream mode: finalize the streaming content item
+                if streaming_tc:
+                    yield streaming_tc.emit_text_done()
+                    yield streaming_tc.emit_done()
+                if streaming_content_item:
+                    yield streaming_content_item.emit_done()
+                streaming_content_item = None
+                streaming_tc = None
 
             # "agent" type events are just for internal tracking
 
