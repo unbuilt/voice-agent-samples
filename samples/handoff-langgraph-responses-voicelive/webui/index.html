@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Handoff Voice Live</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #191b22;
+      --border: #2a2d37;
+      --text: #e4e4e7;
+      --muted: #71717a;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --purple: #a855f7;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    #connectionBadge {
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      font-weight: 500;
+    }
+    .badge-disconnected { background: #1c1c1c; color: var(--muted); border: 1px solid var(--border); }
+    .badge-connecting { background: #422006; color: var(--amber); border: 1px solid #78350f; }
+    .badge-connected { background: #052e16; color: var(--green); border: 1px solid #166534; }
+
+    /* Main layout */
+    main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Left: conversation */
+    #conversationPanel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .msg {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg-user {
+      background: var(--accent);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg-assistant {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+    }
+    .msg-status {
+      align-self: center;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-style: italic;
+      padding: 4px 0;
+    }
+    .msg-wrapper-user {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      align-self: flex-end;
+      max-width: 90%;
+    }
+    .msg-wrapper-assistant {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      align-self: flex-start;
+      max-width: 90%;
+    }
+    .msg-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 3px;
+      font-weight: 500;
+    }
+
+    /* Right: sidebar */
+    #sidebar {
+      width: 320px;
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+    }
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-section h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    /* Agent pipeline */
+    #agentPipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .agent-node {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      transition: all 0.3s;
+    }
+    .agent-node.active {
+      border-color: var(--accent);
+      background: #1e293b;
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .agent-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .agent-node.active .agent-dot { background: var(--green); }
+    .agent-name { font-size: 13px; font-weight: 500; }
+    .agent-role { font-size: 11px; color: var(--muted); }
+
+    /* Transfer log */
+    #transferLog {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .transfer-entry {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 6px 8px;
+      background: var(--bg);
+      border-radius: 6px;
+      border-left: 3px solid var(--purple);
+    }
+    .transfer-entry .transfer-time { color: var(--muted); font-size: 10px; }
+    .transfer-entry .transfer-detail { color: var(--text); margin-top: 2px; }
+
+    /* Status indicator */
+    #voiceStatus {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+    }
+    #voiceStatusDot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--border);
+      transition: background 0.3s;
+    }
+    #voiceStatusDot.listening { background: var(--green); animation: pulse 1.5s infinite; }
+    #voiceStatusDot.speaking { background: var(--accent); animation: pulse 1s infinite; }
+    #voiceStatusDot.processing { background: var(--amber); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    #voiceStatusText { font-size: 13px; }
+
+    /* Bottom bar */
+    #bottomBar {
+      padding: 16px 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    #bottomBar button {
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: none;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    #btnConnect {
+      background: var(--accent);
+      color: #fff;
+    }
+    #btnConnect:hover { background: #2563eb; }
+    #btnConnect:disabled { opacity: 0.5; cursor: not-allowed; }
+    #btnDisconnect {
+      background: #7f1d1d;
+      color: #fca5a5;
+    }
+    #btnDisconnect:hover { background: #991b1b; }
+    #btnDisconnect:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Config inputs */
+    .config-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 10px;
+    }
+    .config-row label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .config-row input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+    .config-row input:focus { border-color: var(--accent); }
+
+    /* Events panel */
+    #eventsPanel {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    #events {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 16px 16px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 11px;
+    }
+    .event-entry {
+      padding: 3px 0;
+      color: var(--muted);
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .event-type { color: var(--amber); }
+
+    /* Collapsible section */
+    .sidebar-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+    }
+    .sidebar-section-header .collapse-icon {
+      font-size: 12px;
+      color: var(--muted);
+      transition: transform 0.2s;
+    }
+    .sidebar-section.collapsed .collapse-icon {
+      transform: rotate(-90deg);
+    }
+    .sidebar-section.collapsed .sidebar-section-body {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Handoff Voice Live</h1>
+    <span id="connectionBadge" class="badge-disconnected">Disconnected</span>
+  </header>
+
+  <main>
+    <div id="conversationPanel">
+      <div id="messages"></div>
+      <div id="bottomBar">
+        <button id="btnConnect">Connect</button>
+        <button id="btnDisconnect" disabled>Disconnect</button>
+        <span id="listeningHint" style="font-size: 12px; color: var(--muted);"></span>
+      </div>
+    </div>
+
+    <div id="sidebar">
+      <!-- Config (collapsible) -->
+      <div class="sidebar-section collapsed" id="connectionSection">
+        <div class="sidebar-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+          <h3>Connection</h3>
+          <span class="collapse-icon">&#9660;</span>
+        </div>
+        <div class="sidebar-section-body">
+          <div class="config-row">
+            <label>Endpoint</label>
+            <input id="cfgEndpoint" value="" placeholder="https://....services.ai.azure.com" />
+          </div>
+          <div class="config-row">
+            <label>Agent Name</label>
+            <input id="cfgAgentName" value="" placeholder="my-agent" />
+          </div>
+          <div class="config-row">
+            <label>Project Name</label>
+            <input id="cfgProjectName" value="" placeholder="my-project" />
+          </div>
+          <div class="config-row">
+            <label>Access Token</label>
+            <input id="cfgToken" type="password" value="" placeholder="Bearer token (az account get-access-token)" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Voice Status -->
+      <div class="sidebar-section">
+        <h3>Voice Status</h3>
+        <div id="voiceStatus">
+          <div id="voiceStatusDot"></div>
+          <span id="voiceStatusText">Idle</span>
+        </div>
+      </div>
+
+      <!-- Agent Pipeline -->
+      <div class="sidebar-section">
+        <h3>Agent Pipeline</h3>
+        <div id="agentPipeline">
+          <div class="agent-node active" data-agent="triage_agent">
+            <div class="agent-dot"></div>
+            <div>
+              <div class="agent-name">Triage Agent</div>
+              <div class="agent-role">Routes requests</div>
+            </div>
+          </div>
+          <div class="agent-node" data-agent="refund_agent">
+            <div class="agent-dot"></div>
+            <div>
+              <div class="agent-name">Refund Agent</div>
+              <div class="agent-role">Processes refunds</div>
+            </div>
+          </div>
+          <div class="agent-node" data-agent="order_agent">
+            <div class="agent-dot"></div>
+            <div>
+              <div class="agent-name">Order Agent</div>
+              <div class="agent-role">Handles replacements</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transfer Log -->
+      <div class="sidebar-section">
+        <h3>Transfer Log</h3>
+        <div id="transferLog">
+          <div style="font-size: 12px; color: var(--muted);">No transfers yet</div>
+        </div>
+      </div>
+
+      <!-- Events -->
+      <div class="sidebar-section" id="eventsPanel">
+        <h3>Events</h3>
+        <div id="events"></div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>
